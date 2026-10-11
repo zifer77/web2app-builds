@@ -1,0 +1,195 @@
+# Workflow buat build APK dari ZIP project Flutter
+name: Build Flutter APK
+run-name: "Build ${{ inputs.job_id }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: "ID job dari backend"
+        required: true
+        type: string
+      zip_path:
+        description: "Path ZIP di repo, misal inputs/abc-123.zip"
+        required: true
+        type: string
+      app_name:
+        description: "Nama app buat nama file APK"
+        required: false
+        default: "app"
+        type: string
+      build_mode:
+        description: "Mode build"
+        required: false
+        default: "release"
+        type: choice
+        options:
+          - release
+          - debug
+          - profile
+      callback_url:
+        description: "URL webhook backend"
+        required: true
+        type: string
+
+# Butuh write biar bisa baca/tulis konten repo
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      JOB_ID: ${{ inputs.job_id }}
+      ZIP_PATH: ${{ inputs.zip_path }}
+      APP_NAME: ${{ inputs.app_name }}
+      BUILD_MODE: ${{ inputs.build_mode }}
+      CALLBACK_URL: ${{ inputs.callback_url }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      # 1. Ambil isi repo dulu bre
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      # 2. Flutter butuh Java 17 buat Gradle
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # 3. Pasang Flutter, pakai cache biar ngebut
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.24.3"
+          channel: stable
+          cache: true
+
+      # 4. Download ZIP dari repo (pakai token biar repo private juga aman)
+      - name: Download ZIP
+        run: |
+          exec > >(tee -a /tmp/build.log) 2>&1
+          echo "Narik ZIP: $ZIP_PATH"
+          curl -fsSL \
+            -H "Authorization: token ${{ github.token }}" \
+            "https://raw.githubusercontent.com/${{ github.repository }}/${{ github.ref_name }}/${ZIP_PATH}" \
+            -o /tmp/project.zip || cp "$ZIP_PATH" /tmp/project.zip
+          ls -lh /tmp/project.zip
+
+      # 5. Ekstrak ZIP ke /tmp/project, kalau ada folder bungkusan ya diratain
+      - name: Extract ZIP
+        run: |
+          exec > >(tee -a /tmp/build.log) 2>&1
+          rm -rf /tmp/extract /tmp/project
+          mkdir -p /tmp/extract
+          unzip -q /tmp/project.zip -d /tmp/extract
+          PUBSPEC=$(find /tmp/extract -maxdepth 2 -name pubspec.yaml -not -path "*/__MACOSX/*" | head -n 1)
+          if [ -z "$PUBSPEC" ]; then
+            echo "Waduh, pubspec.yaml nggak ketemu di dalam ZIP"
+            exit 1
+          fi
+          mv "$(dirname "$PUBSPEC")" /tmp/project
+          echo "PROJECT_DIR=/tmp/project" >> "$GITHUB_ENV"
+          ls -la /tmp/project
+
+      # 6. Cek pubspec.yaml valid atau nggak
+      - name: Validate pubspec.yaml
+        working-directory: /tmp/project
+        run: |
+          exec > >(tee -a /tmp/build.log) 2>&1
+          if ! grep -q "^name:" pubspec.yaml; then
+            echo "pubspec.yaml nggak punya field name, ZIP-nya kayaknya bukan project Flutter"
+            exit 1
+          fi
+          echo "pubspec.yaml aman, lanjut"
+
+      # 7. Kalau gradle-wrapper.jar hilang (sering kejadian pas di-zip), bikin ulang folder android
+      - name: Restore gradle-wrapper.jar
+        working-directory: /tmp/project
+        run: |
+          exec > >(tee -a /tmp/build.log) 2>&1
+          if [ ! -f android/gradle/wrapper/gradle-wrapper.jar ]; then
+            echo "gradle-wrapper.jar ilang, regenerate platform android..."
+            PROJECT_NAME=$(grep "^name:" pubspec.yaml | head -n 1 | awk '{print $2}')
+            flutter create --platforms=android --project-name "$PROJECT_NAME" .
+          else
+            echo "gradle-wrapper.jar aman"
+          fi
+
+      # 8. Tarik dependency
+      - name: Flutter pub get
+        working-directory: /tmp/project
+        run: |
+          set -o pipefail
+          flutter pub get 2>&1 | tee -a /tmp/build.log
+
+      # 9. Build APK, dipecah per arsitektur biar kecil
+      - name: Build APK
+        working-directory: /tmp/project
+        run: |
+          set -o pipefail
+          flutter build apk --${BUILD_MODE} --split-per-abi 2>&1 | tee -a /tmp/build.log
+
+      # 10. Rename APK jadi {app_name}-{abi}.apk
+      - name: Rename APK
+        working-directory: /tmp/project
+        run: |
+          exec > >(tee -a /tmp/build.log) 2>&1
+          mkdir -p /tmp/out
+          COUNT=0
+          for f in build/app/outputs/flutter-apk/app-*-${BUILD_MODE}.apk; do
+            [ -f "$f" ] || continue
+            ABI=$(basename "$f" .apk | sed -E "s/^app-//; s/-${BUILD_MODE}\$//")
+            cp "$f" "/tmp/out/${APP_NAME}-${ABI}.apk"
+            COUNT=$((COUNT + 1))
+          done
+          if [ "$COUNT" -eq 0 ]; then
+            echo "Nggak ada APK hasil build, aneh banget"
+            exit 1
+          fi
+          ls -lh /tmp/out
+
+      # 11. Simpen APK sebagai artifact selama 7 hari
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk-${{ inputs.job_id }}
+          path: /tmp/out/*.apk
+          retention-days: 7
+
+      # 12. Kabarin backend kalau sukses
+      - name: Notify Backend (SUCCESS)
+        if: success()
+        run: |
+          jq -n \
+            --arg job_id "$JOB_ID" \
+            --arg status "success" \
+            --argjson run_id "${{ github.run_id }}" \
+            --arg run_url "$RUN_URL" \
+            --arg artifact_name "apk-${JOB_ID}" \
+            '{job_id: $job_id, status: $status, run_id: $run_id, run_url: $run_url, artifact_name: $artifact_name}' \
+          | curl -sS -X POST "$CALLBACK_URL" \
+              -H "Content-Type: application/json" \
+              --data-binary @-
+
+      # 13. Kabarin backend kalau gagal, bawa 500 baris log terakhir
+      - name: Notify Backend (FAILED)
+        if: failure()
+        run: |
+          if [ -f /tmp/build.log ]; then
+            ERROR_LOG=$(tail -n 500 /tmp/build.log)
+          else
+            ERROR_LOG="Log kosong, build gagal sebelum sempat nyatet apa-apa"
+          fi
+          jq -n \
+            --arg job_id "$JOB_ID" \
+            --arg status "failed" \
+            --argjson run_id "${{ github.run_id }}" \
+            --arg run_url "$RUN_URL" \
+            --arg error_log "$ERROR_LOG" \
+            '{job_id: $job_id, status: $status, run_id: $run_id, run_url: $run_url, error_log: $error_log}' \
+          | curl -sS -X POST "$CALLBACK_URL" \
+              -H "Content-Type: application/json" \
+              --data-binary @-
