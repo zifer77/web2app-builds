@@ -2,14 +2,14 @@
   "job_id": "871cff48-a28f-4fba-9181-b4f897742b12",
   "app_name": "app",
   "build_mode": "release",
-  "status": "failed",
-  "progress": 50,
-  "current_step": "failed",
+  "status": "building",
+  "progress": 20,
+  "current_step": "queued",
   "size_bytes": 25978995,
   "files_count": 297,
   "created_at": "2026-10-11T13:47:58.914540+00:00",
-  "updated_at": "2026-10-11T13:58:14.725107+00:00",
-  "github_run_id": 38145067294,
-  "github_run_url": "https://github.com/zifer77/web2app-builds/actions/runs/38145067294",
-  "error_log": "Build berakhir dengan hasil 'failure'. Cek detail di GitHub: https://github.com/zifer77/web2app-builds/actions/runs/38145067294"
+  "updated_at": "2026-10-11T14:09:32.614398+00:00",
+  "github_run_id": 38146039915,
+  "github_run_url": "https://github.com/zifer77/web2app-builds/actions/runs/38146039915",
+  "error_log": null
 }
