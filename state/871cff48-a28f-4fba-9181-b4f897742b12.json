@@ -2,11 +2,14 @@
   "job_id": "871cff48-a28f-4fba-9181-b4f897742b12",
   "app_name": "app",
   "build_mode": "release",
-  "status": "uploaded",
-  "progress": 10,
-  "current_step": "uploaded",
+  "status": "building",
+  "progress": 20,
+  "current_step": "queued",
   "size_bytes": 25978995,
   "files_count": 297,
   "created_at": "2026-10-11T13:47:58.914540+00:00",
-  "updated_at": "2026-10-11T13:47:58.914540+00:00"
+  "updated_at": "2026-10-11T13:48:12.859173+00:00",
+  "github_run_id": 38144623836,
+  "github_run_url": "https://github.com/zifer77/web2app-builds/actions/runs/38144623836",
+  "error_log": null
 }
