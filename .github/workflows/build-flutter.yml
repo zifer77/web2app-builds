@@ -27,14 +27,6 @@ on:
           - release
           - debug
           - profile
-      split_per_abi:
-        description: "Pisah APK per ABI (kalau false, jadi 1 APK universal)"
-        required: false
-        default: "true"
-        type: choice
-        options:
-          - "true"
-          - "false"
       callback_url:
         description: "URL webhook backend"
         required: true
@@ -53,22 +45,12 @@ jobs:
       ZIP_PATH: ${{ inputs.zip_path }}
       APP_NAME: ${{ inputs.app_name }}
       BUILD_MODE: ${{ inputs.build_mode }}
-      SPLIT_PER_ABI: ${{ inputs.split_per_abi }}
       CALLBACK_URL: ${{ inputs.callback_url }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
       # 1. Ambil isi repo dulu bre
       - name: Checkout repo
         uses: actions/checkout@v4
-
-      # 1b. Sanitasi APP_NAME biar nggak bikin filename aneh
-      - name: Sanitize APP_NAME
-        run: |
-          exec > >(tee -a /tmp/build.log) 2>&1
-          SAFE_NAME=$(printf '%s' "$APP_NAME" | tr -d '/\\:*?"<>|' | tr ' ' '_')
-          if [ -z "$SAFE_NAME" ]; then SAFE_NAME="app"; fi
-          echo "APP_NAME=$SAFE_NAME" >> "$GITHUB_ENV"
-          echo "APP_NAME disanitasi jadi: $SAFE_NAME"
 
       # 2. Download ZIP dari repo (pakai token biar repo private juga aman)
       - name: Download ZIP
@@ -143,39 +125,41 @@ jobs:
           echo "flutter_version=$VERSION" >> "$GITHUB_OUTPUT"
 
           # c) Gradle project lama (< 7.3) nggak jalan di Java 17, jadi pakai Java 11
-          #    Regex udah dukung versi 3 segmen (contoh: 8.10.2)
           JAVA=17
-          GV=""
-          if [ -f android/gradle/wrapper/gradle-wrapper.properties ]; then
-            GV=$(grep -oE 'gradle-[0-9]+\.[0-9]+(\.[0-9]+)?' android/gradle/wrapper/gradle-wrapper.properties 2>/dev/null \
-                 | head -n 1 | sed 's/gradle-//' || true)
-          fi
+          GV=$(grep -oE 'gradle-[0-9]+\.[0-9]+' android/gradle/wrapper/gradle-wrapper.properties 2>/dev/null | head -n 1 | sed 's/gradle-//' || true)
           if [ -n "$GV" ]; then
             GMAJOR=${GV%%.*}
-            REST=${GV#*.}
-            GMINOR=${REST%%.*}
+            GMINOR=${GV#*.}
             if [ "$GMAJOR" -lt 7 ] || { [ "$GMAJOR" -eq 7 ] && [ "$GMINOR" -lt 3 ]; }; then
               JAVA=11
             fi
             echo "Gradle project: $GV"
-          else
-            echo "Gradle version nggak kedeteksi, default Java 17"
           fi
           echo "Java dipakai: $JAVA"
           echo "java_version=$JAVA" >> "$GITHUB_OUTPUT"
 
-      # 6. Pasang Java sesuai kebutuhan project
-      #    PENTING: setup-java menimpa JAVA_HOME, jadi cuma panggil satu yang dipakai
-      - name: Setup Java (versi cocok)
+      # 6. Pasang Java 11 dan 17 (17 jadi default)
+      - name: Setup Java 11
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: ${{ steps.detect.outputs.java_version }}
+          java-version: "11"
 
-      - name: Confirm Java version
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Pilih Java yang cocok
         run: |
-          echo "JAVA_HOME=$JAVA_HOME"
-          java -version 2>&1 | tee -a /tmp/build.log
+          if [ "${{ steps.detect.outputs.java_version }}" = "11" ]; then
+            echo "JAVA_HOME=$JAVA_HOME_11_X64" >> "$GITHUB_ENV"
+            echo "Pakai Java 11 buat project jadul ini"
+          else
+            echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
+            echo "Pakai Java 17"
+          fi
 
       # 7. Pasang Flutter sesuai versi project; kalau gagal atau nggak ketahuan, pakai stable terbaru
       - name: Setup Flutter (versi project)
@@ -220,14 +204,10 @@ jobs:
       - name: Build APK
         working-directory: /tmp/project
         run: |
-          SPLIT_FLAG=""
-          if [ "$SPLIT_PER_ABI" = "true" ]; then SPLIT_FLAG="--split-per-abi"; fi
-
           for ATTEMPT in 1 2 3; do
             echo "=== Percobaan build ke-$ATTEMPT ===" | tee -a /tmp/build.log
             set +e
-            # shellcheck disable=SC2086
-            flutter build apk --${BUILD_MODE} ${SPLIT_FLAG} > /tmp/attempt.log 2>&1
+            flutter build apk --${BUILD_MODE} --split-per-abi > /tmp/attempt.log 2>&1
             CODE=$?
             set -e
             cat /tmp/attempt.log | tee -a /tmp/build.log
@@ -250,12 +230,10 @@ jobs:
             fi
 
             # Fix 2: AGP 9 + newDsl, matiin newDsl biar kode project lama tetep kebaca
-            if grep -q "android.newDsl" /tmp/attempt.log; then
-              if ! grep -qE '^\s*android\.newDsl\s*=\s*false' android/gradle.properties 2>/dev/null; then
-                echo "Matiin android.newDsl otomatis" | tee -a /tmp/build.log
-                printf '\nandroid.newDsl=false\n' >> android/gradle.properties
-                FIXED=1
-              fi
+            if grep -q "android.newDsl" /tmp/attempt.log && ! grep -q "^android.newDsl=false" android/gradle.properties 2>/dev/null; then
+              echo "Matiin android.newDsl otomatis" | tee -a /tmp/build.log
+              printf '\nandroid.newDsl=false\n' >> android/gradle.properties
+              FIXED=1
             fi
 
             if [ "$FIXED" -eq 0 ]; then
@@ -266,29 +244,19 @@ jobs:
           echo "Udah 3x nyoba tapi tetep gagal" | tee -a /tmp/build.log
           exit 1
 
-      # 11. Rename APK jadi {app_name}-{abi}.apk (atau {app_name}.apk kalau universal)
+      # 11. Rename APK jadi {app_name}-{abi}.apk
       - name: Rename APK
         working-directory: /tmp/project
         run: |
           exec > >(tee -a /tmp/build.log) 2>&1
           mkdir -p /tmp/out
           COUNT=0
-
-          if [ "$SPLIT_PER_ABI" = "true" ]; then
-            for f in build/app/outputs/flutter-apk/app-*-${BUILD_MODE}.apk; do
-              [ -f "$f" ] || continue
-              ABI=$(basename "$f" .apk | sed -E "s/^app-//; s/-${BUILD_MODE}\$//")
-              cp "$f" "/tmp/out/${APP_NAME}-${ABI}.apk"
-              COUNT=$((COUNT + 1))
-            done
-          else
-            f="build/app/outputs/flutter-apk/app-${BUILD_MODE}.apk"
-            if [ -f "$f" ]; then
-              cp "$f" "/tmp/out/${APP_NAME}.apk"
-              COUNT=1
-            fi
-          fi
-
+          for f in build/app/outputs/flutter-apk/app-*-${BUILD_MODE}.apk; do
+            [ -f "$f" ] || continue
+            ABI=$(basename "$f" .apk | sed -E "s/^app-//; s/-${BUILD_MODE}\$//")
+            cp "$f" "/tmp/out/${APP_NAME}-${ABI}.apk"
+            COUNT=$((COUNT + 1))
+          done
           if [ "$COUNT" -eq 0 ]; then
             echo "Nggak ada APK hasil build, aneh banget"
             exit 1
@@ -316,8 +284,7 @@ jobs:
             '{job_id: $job_id, status: $status, run_id: $run_id, run_url: $run_url, artifact_name: $artifact_name}' \
           | curl -sS -X POST "$CALLBACK_URL" \
               -H "Content-Type: application/json" \
-              --data-binary @- \
-            || echo "Callback sukses gagal dikirim, tapi build-nya sukses"
+              --data-binary @-
 
       # 14. Kabarin backend kalau gagal, bawa 500 baris log terakhir
       - name: Notify Backend (FAILED)
@@ -337,5 +304,4 @@ jobs:
             '{job_id: $job_id, status: $status, run_id: $run_id, run_url: $run_url, error_log: $error_log}' \
           | curl -sS -X POST "$CALLBACK_URL" \
               -H "Content-Type: application/json" \
-              --data-binary @- \
-            || echo "Callback gagal juga dikirim, yaudah"
+              --data-binary @-
