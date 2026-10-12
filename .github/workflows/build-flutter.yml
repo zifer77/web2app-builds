@@ -115,6 +115,18 @@ jobs:
             fi
           fi
 
+          # c) Masih kosong? Lihat batas SDK di pubspec.yaml. Project Dart 2 (batas atas 3.0.0)
+          #    nggak bisa pakai Flutter terbaru, jadi pakai Flutter 3.7.12 (Dart 2.19, masih mau
+          #    nerima kode lama yang belum null safety)
+          if [ -z "$VERSION" ]; then
+            SDK_LINE=$(awk '/^environment:/{f=1;next} f && /^[^ \t#]/{f=0} f && /^[ \t]+sdk:/{print; exit}' pubspec.yaml || true)
+            echo "Batas SDK di pubspec: ${SDK_LINE:-tidak ada}"
+            if echo "$SDK_LINE" | grep -qE '<[[:space:]]*(3\.0\.0|2\.)|\^[[:space:]]*2\.'; then
+              VERSION="3.7.12"
+              echo "Project masih Dart 2, pakai Flutter $VERSION"
+            fi
+          fi
+
           # Bersihin awalan "v" kalau ada
           VERSION="${VERSION#v}"
           if [ -n "$VERSION" ]; then
