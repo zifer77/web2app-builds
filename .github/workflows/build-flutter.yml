@@ -9,8 +9,8 @@ on:
         description: "ID job dari backend"
         required: true
         type: string
-      zip_path:
-        description: "Path ZIP di repo, misal inputs/abc-123.zip"
+      zip_tag:
+        description: "Tag release yang berisi project.zip, misal in-abc-123"
         required: true
         type: string
       app_name:
@@ -42,28 +42,27 @@ jobs:
     timeout-minutes: 45
     env:
       JOB_ID: ${{ inputs.job_id }}
-      ZIP_PATH: ${{ inputs.zip_path }}
+      ZIP_TAG: ${{ inputs.zip_tag }}
       APP_NAME: ${{ inputs.app_name }}
       BUILD_MODE: ${{ inputs.build_mode }}
       CALLBACK_URL: ${{ inputs.callback_url }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
-      # 1. Ambil isi repo dulu bre
-      - name: Checkout repo
-        uses: actions/checkout@v4
-
-      # 2. Download ZIP dari repo (pakai token biar repo private juga aman)
+      # 1. Download ZIP dari GitHub Release (nggak ada batas 25 MB kayak upload lewat API contents)
       - name: Download ZIP
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           exec > >(tee -a /tmp/build.log) 2>&1
-          echo "Narik ZIP: $ZIP_PATH"
-          curl -fsSL \
-            -H "Authorization: token ${{ github.token }}" \
-            "https://raw.githubusercontent.com/${{ github.repository }}/${{ github.ref_name }}/${ZIP_PATH}" \
-            -o /tmp/project.zip || cp "$ZIP_PATH" /tmp/project.zip
+          echo "Narik ZIP dari release: $ZIP_TAG"
+          gh release download "$ZIP_TAG" \
+            --repo "${{ github.repository }}" \
+            --pattern "project.zip" \
+            --output /tmp/project.zip \
+            --clobber
           ls -lh /tmp/project.zip
 
-      # 3. Ekstrak ZIP ke /tmp/project, kalau ada folder bungkusan ya diratain
+      # 2. Ekstrak ZIP ke /tmp/project, kalau ada folder bungkusan ya diratain
       - name: Extract ZIP
         run: |
           exec > >(tee -a /tmp/build.log) 2>&1
