@@ -1,0 +1,14 @@
+{
+  "job_id": "bf56616d-1670-401f-bee8-18aee046b25a",
+  "app_name": "app",
+  "build_mode": "release",
+  "status": "uploaded",
+  "progress": 10,
+  "current_step": "uploaded",
+  "size_bytes": 42184442,
+  "files_count": 324,
+  "fix_attempts": 0,
+  "fix_history": [],
+  "created_at": "2026-10-12T23:24:20.619949+00:00",
+  "updated_at": "2026-10-12T23:24:20.619949+00:00"
+}
